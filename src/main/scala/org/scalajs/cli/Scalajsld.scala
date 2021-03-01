@@ -10,42 +10,36 @@
 package org.scalajs.cli
 
 import org.scalajs.ir.ScalaJSVersions
-
-import org.scalajs.logging._
-
 import org.scalajs.linker._
+import org.scalajs.linker.interface.CheckedBehavior.Compliant
 import org.scalajs.linker.interface._
-
-import CheckedBehavior.Compliant
-
-import scala.collection.immutable.Seq
-
-import scala.concurrent.{Await, Future}
-import scala.concurrent.duration.Duration
-import scala.concurrent.ExecutionContext.Implicits.global
+import org.scalajs.logging._
 
 import java.io.File
 import java.net.URI
-import java.nio.file.Path
+import scala.collection.immutable.Seq
+import scala.concurrent.Await
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration.Duration
 
 object Scalajsld {
 
   private case class Options(
-      cp: Seq[File] = Seq.empty,
-      moduleInitializers: Seq[ModuleInitializer] = Seq.empty,
-      output: File = null,
-      semantics: Semantics = Semantics.Defaults,
-      esFeatures: ESFeatures = ESFeatures.Defaults,
-      moduleKind: ModuleKind = ModuleKind.NoModule,
-      noOpt: Boolean = false,
-      fullOpt: Boolean = false,
-      prettyPrint: Boolean = false,
-      sourceMap: Boolean = false,
-      relativizeSourceMap: Option[URI] = None,
-      checkIR: Boolean = false,
-      stdLib: Option[File] = None,
-      logLevel: Level = Level.Info
-  )
+                              cp: Seq[File] = Seq.empty,
+                              moduleInitializers: Seq[ModuleInitializer] = Seq.empty,
+                              output: File = null,
+                              semantics: Semantics = Semantics.Defaults,
+                              esFeatures: ESFeatures = ESFeatures.Defaults,
+                              moduleKind: ModuleKind = ModuleKind.NoModule,
+                              noOpt: Boolean = false,
+                              fullOpt: Boolean = false,
+                              prettyPrint: Boolean = false,
+                              sourceMap: Boolean = false,
+                              relativizeSourceMap: Option[URI] = None,
+                              checkIR: Boolean = false,
+                              stdLib: Option[File] = None,
+                              logLevel: Level = Level.Info
+                            )
 
   private implicit object MainMethodRead extends scopt.Read[ModuleInitializer] {
     val arity = 1
@@ -54,7 +48,7 @@ object Scalajsld {
       if (lastDot < 0)
         throw new IllegalArgumentException(s"$s is not a valid main method")
       ModuleInitializer.mainMethodWithArgs(s.substring(0, lastDot),
-          s.substring(lastDot + 1))
+        s.substring(lastDot + 1))
     }
   }
 
@@ -62,7 +56,7 @@ object Scalajsld {
     val arity = 1
     val reads = { (s: String) =>
       ModuleKind.All.find(_.toString() == s).getOrElse(
-          throw new IllegalArgumentException(s"$s is not a valid module kind"))
+        throw new IllegalArgumentException(s"$s is not a valid module kind"))
     }
   }
 
@@ -100,8 +94,9 @@ object Scalajsld {
         .action { (_, c) => c.copy(sourceMap = true) }
         .text("Produce a source map for the produced code")
       opt[Unit]("compliantAsInstanceOfs")
-        .action { (_, c) => c.copy(semantics =
-          c.semantics.withAsInstanceOfs(Compliant))
+        .action { (_, c) =>
+          c.copy(semantics =
+            c.semantics.withAsInstanceOfs(Compliant))
         }
         .text("Use compliant asInstanceOfs")
       opt[Unit]("es2015")
@@ -125,8 +120,8 @@ object Scalajsld {
         .hidden()
         .action { (x, c) => c.copy(stdLib = Some(x)) }
         .text("Location of Scala.js standard libarary. This is set by the " +
-            "runner script and automatically prepended to the classpath. " +
-            "Use -n to not include it.")
+          "runner script and automatically prepended to the classpath. " +
+          "Use -n to not include it.")
       opt[Unit]('d', "debug")
         .action { (_, c) => c.copy(logLevel = Level.Debug) }
         .text("Debug mode: Show full log")
@@ -170,27 +165,17 @@ object Scalajsld {
 
       val linker = StandardImpl.linker(config)
       val logger = new ScalaConsoleLogger(options.logLevel)
-
-      val output = {
-        val js = options.output.toPath()
-        val sm = js.resolveSibling(js.getFileName().toString() + ".map")
-
-        def relURI(f: Path) =
-          new URI(null, null, f.getFileName().toString, null)
-
-        LinkerOutput(PathOutputFile(js))
-          .withSourceMap(PathOutputFile(sm))
-          .withSourceMapURI(relURI(sm))
-          .withJSFileURI(relURI(js))
-      }
-
       val cache = StandardImpl.irFileCache().newCache
-
+      val js = options.output.toPath()
       val result = PathIRContainer
         .fromClasspath(classpath)
-        .flatMap(containers => cache.cached(containers._1))
-        .flatMap(linker.link(_, moduleInitializers, output, logger))
-      Await.result(result, Duration.Inf)
+        .map(_._1)
+        .flatMap(cache.cached _)
+        .flatMap(linker.link(_, moduleInitializers, PathOutputDirectory(js), logger))
+      val report = Await.result(result, Duration.Inf)
+      if (report.publicModules.size != 1)
+        throw new AssertionError(s"got other than 1 module: $report")
+      js.resolve(report.publicModules.head.jsFileName)
     }
   }
 }
