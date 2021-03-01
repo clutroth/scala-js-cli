@@ -143,6 +143,7 @@ object Scalajsld {
     }
 
     for (options <- parser.parse(args, Options())) {
+      options.output.ensuring(_.isDirectory, "output have to be directory")
       val classpath = (options.stdLib.toList ++ options.cp).map(_.toPath())
       val moduleInitializers = options.moduleInitializers
 
