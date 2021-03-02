@@ -73,7 +73,7 @@ object Scalajsld {
       if(file.isDirectory){
         OutputFile.Directory(file)
       } else {
-        scala.Console.err.println("using file as output is deprecated since 1.3.0. Please provide directory")
+        scala.Console.err.println("WARNING: using file as output is deprecated since 1.3.0. Please provide directory")
         OutputFile.SingleFile(file)
       }
     }

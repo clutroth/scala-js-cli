@@ -53,7 +53,7 @@ test -s test.js || fail "scalajsld: empty output"
 test -s test.js.map || fail "scalajsld: empty source map"
 
 node test.js > got-legacy.run
-cat > want--legacy.run <<EOF
+cat > want-legacy.run <<EOF
 asdf 2
 EOF
 
