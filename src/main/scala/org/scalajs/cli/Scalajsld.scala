@@ -10,36 +10,42 @@
 package org.scalajs.cli
 
 import org.scalajs.ir.ScalaJSVersions
-import org.scalajs.linker._
-import org.scalajs.linker.interface.CheckedBehavior.Compliant
-import org.scalajs.linker.interface._
+
 import org.scalajs.logging._
+
+import org.scalajs.linker._
+import org.scalajs.linker.interface._
+
+import CheckedBehavior.Compliant
+
+import scala.collection.immutable.Seq
+
+import scala.concurrent.Await
+import scala.concurrent.duration.Duration
+import scala.concurrent.ExecutionContext.Implicits.global
 
 import java.io.File
 import java.net.URI
-import scala.collection.immutable.Seq
-import scala.concurrent.Await
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.concurrent.duration.Duration
+import java.nio.file.Path
 
 object Scalajsld {
 
   private case class Options(
-                              cp: Seq[File] = Seq.empty,
-                              moduleInitializers: Seq[ModuleInitializer] = Seq.empty,
-                              output: File = null,
-                              semantics: Semantics = Semantics.Defaults,
-                              esFeatures: ESFeatures = ESFeatures.Defaults,
-                              moduleKind: ModuleKind = ModuleKind.NoModule,
-                              noOpt: Boolean = false,
-                              fullOpt: Boolean = false,
-                              prettyPrint: Boolean = false,
-                              sourceMap: Boolean = false,
-                              relativizeSourceMap: Option[URI] = None,
-                              checkIR: Boolean = false,
-                              stdLib: Option[File] = None,
-                              logLevel: Level = Level.Info
-                            )
+      cp: Seq[File] = Seq.empty,
+      moduleInitializers: Seq[ModuleInitializer] = Seq.empty,
+      output: OutputFile = null,
+      semantics: Semantics = Semantics.Defaults,
+      esFeatures: ESFeatures = ESFeatures.Defaults,
+      moduleKind: ModuleKind = ModuleKind.NoModule,
+      noOpt: Boolean = false,
+      fullOpt: Boolean = false,
+      prettyPrint: Boolean = false,
+      sourceMap: Boolean = false,
+      relativizeSourceMap: Option[URI] = None,
+      checkIR: Boolean = false,
+      stdLib: Option[File] = None,
+      logLevel: Level = Level.Info
+  )
 
   private implicit object MainMethodRead extends scopt.Read[ModuleInitializer] {
     val arity = 1
@@ -48,7 +54,7 @@ object Scalajsld {
       if (lastDot < 0)
         throw new IllegalArgumentException(s"$s is not a valid main method")
       ModuleInitializer.mainMethodWithArgs(s.substring(0, lastDot),
-        s.substring(lastDot + 1))
+          s.substring(lastDot + 1))
     }
   }
 
@@ -56,8 +62,29 @@ object Scalajsld {
     val arity = 1
     val reads = { (s: String) =>
       ModuleKind.All.find(_.toString() == s).getOrElse(
-        throw new IllegalArgumentException(s"$s is not a valid module kind"))
+          throw new IllegalArgumentException(s"$s is not a valid module kind"))
     }
+  }
+
+  private implicit object OutputFileRead extends scopt.Read[OutputFile] {
+    val arity: Int = 1
+    val reads = { (s: String) =>
+      val file = implicitly[scopt.Read[File]].reads(s)
+      if(file.isDirectory){
+        OutputFile.Directory(file)
+      } else {
+        scala.Console.err.println("using file as output is deprecated since 1.3.0. Please provide directory")
+        OutputFile.SingleFile(file)
+      }
+    }
+
+  }
+  private sealed trait OutputFile{
+    def file: File
+  }
+  private object OutputFile {
+    final case class SingleFile(file: File) extends OutputFile //deprecated API
+    final case class Directory(file: File) extends OutputFile
   }
 
   def main(args: Array[String]): Unit = {
@@ -73,7 +100,7 @@ object Scalajsld {
         .unbounded()
         .action { (x, c) => c.copy(moduleInitializers = c.moduleInitializers :+ x) }
         .text("Execute the specified main(Array[String]) method on startup")
-      opt[File]('o', "output")
+      opt[OutputFile]('o', "output")
         .valueName("<file>")
         .required()
         .action { (x, c) => c.copy(output = x) }
@@ -94,9 +121,8 @@ object Scalajsld {
         .action { (_, c) => c.copy(sourceMap = true) }
         .text("Produce a source map for the produced code")
       opt[Unit]("compliantAsInstanceOfs")
-        .action { (_, c) =>
-          c.copy(semantics =
-            c.semantics.withAsInstanceOfs(Compliant))
+        .action { (_, c) => c.copy(semantics =
+          c.semantics.withAsInstanceOfs(Compliant))
         }
         .text("Use compliant asInstanceOfs")
       opt[Unit]("es2015")
@@ -120,8 +146,8 @@ object Scalajsld {
         .hidden()
         .action { (x, c) => c.copy(stdLib = Some(x)) }
         .text("Location of Scala.js standard libarary. This is set by the " +
-          "runner script and automatically prepended to the classpath. " +
-          "Use -n to not include it.")
+            "runner script and automatically prepended to the classpath. " +
+            "Use -n to not include it.")
       opt[Unit]('d', "debug")
         .action { (_, c) => c.copy(logLevel = Level.Debug) }
         .text("Debug mode: Show full log")
@@ -143,7 +169,6 @@ object Scalajsld {
     }
 
     for (options <- parser.parse(args, Options())) {
-      options.output.ensuring(_.isDirectory, "output have to be directory")
       val classpath = (options.stdLib.toList ++ options.cp).map(_.toPath())
       val moduleInitializers = options.moduleInitializers
 
@@ -167,16 +192,34 @@ object Scalajsld {
       val linker = StandardImpl.linker(config)
       val logger = new ScalaConsoleLogger(options.logLevel)
       val cache = StandardImpl.irFileCache().newCache
-      val js = options.output.toPath()
+
       val result = PathIRContainer
         .fromClasspath(classpath)
         .map(_._1)
         .flatMap(cache.cached _)
-        .flatMap(linker.link(_, moduleInitializers, PathOutputDirectory(js), logger))
-      val report = Await.result(result, Duration.Inf)
-      if (report.publicModules.size != 1)
-        throw new AssertionError(s"got other than 1 module: $report")
-      js.resolve(report.publicModules.head.jsFileName)
+        .flatMap{irFiles =>
+          options.output match {
+            case OutputFile.SingleFile(jsFile) =>
+              val output = deprecatedOutput(jsFile)
+              linker.link(irFiles, moduleInitializers, output, logger)
+            case OutputFile.Directory(outputDir) =>
+              linker.link(irFiles, moduleInitializers, PathOutputDirectory(outputDir.toPath), logger)
+          }
+        }
+      Await.result(result, Duration.Inf)
     }
+  }
+
+  private def deprecatedOutput(file: File) = {
+    val js = file.toPath()
+    val sm = js.resolveSibling(js.getFileName().toString() + ".map")
+
+    def relURI(f: Path) =
+      new URI(null, null, f.getFileName().toString, null)
+
+    LinkerOutput(PathOutputFile(js))
+      .withSourceMap(PathOutputFile(sm))
+      .withSourceMapURI(relURI(sm))
+      .withJSFileURI(relURI(js))
   }
 }
