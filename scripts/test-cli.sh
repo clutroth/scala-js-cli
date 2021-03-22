@@ -52,7 +52,19 @@ scalajsld -s -o test.js -mm Foo.main bin
 test -s test.js || fail "scalajsld: empty output"
 test -s test.js.map || fail "scalajsld: empty source map"
 
-node test.js > got.run
+node test.js > got-legacy.run
+cat > want-legacy.run <<EOF
+asdf 2
+EOF
+
+diff got-legacy.run want-legacy.run
+
+mkdir test-output
+scalajsld -s -o test-output -mm Foo.main bin
+test -s test-output/main.js || fail "scalajsld: empty output"
+test -s test-output/main.js.map || fail "scalajsld: empty source map"
+
+node test-output/main.js > got.run
 cat > want.run <<EOF
 asdf 2
 EOF

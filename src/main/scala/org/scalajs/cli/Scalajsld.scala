@@ -20,7 +20,7 @@ import CheckedBehavior.Compliant
 
 import scala.collection.immutable.Seq
 
-import scala.concurrent.{Await, Future}
+import scala.concurrent.Await
 import scala.concurrent.duration.Duration
 import scala.concurrent.ExecutionContext.Implicits.global
 
@@ -33,7 +33,7 @@ object Scalajsld {
   private case class Options(
       cp: Seq[File] = Seq.empty,
       moduleInitializers: Seq[ModuleInitializer] = Seq.empty,
-      output: File = null,
+      output: OutputFile = null,
       semantics: Semantics = Semantics.Defaults,
       esFeatures: ESFeatures = ESFeatures.Defaults,
       moduleKind: ModuleKind = ModuleKind.NoModule,
@@ -66,6 +66,27 @@ object Scalajsld {
     }
   }
 
+  private implicit object OutputFileRead extends scopt.Read[OutputFile] {
+    val arity: Int = 1
+    val reads = { (s: String) =>
+      val file = implicitly[scopt.Read[File]].reads(s)
+      if(file.isDirectory){
+        OutputFile.Directory(file)
+      } else {
+        scala.Console.err.println("WARNING: using file as output is deprecated since 1.3.0. Please provide directory")
+        OutputFile.SingleFile(file)
+      }
+    }
+
+  }
+  private sealed trait OutputFile{
+    def file: File
+  }
+  private object OutputFile {
+    final case class SingleFile(file: File) extends OutputFile //deprecated API
+    final case class Directory(file: File) extends OutputFile
+  }
+
   def main(args: Array[String]): Unit = {
     val parser = new scopt.OptionParser[Options]("scalajsld") {
       head("scalajsld", ScalaJSVersions.current)
@@ -79,7 +100,7 @@ object Scalajsld {
         .unbounded()
         .action { (x, c) => c.copy(moduleInitializers = c.moduleInitializers :+ x) }
         .text("Execute the specified main(Array[String]) method on startup")
-      opt[File]('o', "output")
+      opt[OutputFile]('o', "output")
         .valueName("<file>")
         .required()
         .action { (x, c) => c.copy(output = x) }
@@ -170,27 +191,35 @@ object Scalajsld {
 
       val linker = StandardImpl.linker(config)
       val logger = new ScalaConsoleLogger(options.logLevel)
-
-      val output = {
-        val js = options.output.toPath()
-        val sm = js.resolveSibling(js.getFileName().toString() + ".map")
-
-        def relURI(f: Path) =
-          new URI(null, null, f.getFileName().toString, null)
-
-        LinkerOutput(PathOutputFile(js))
-          .withSourceMap(PathOutputFile(sm))
-          .withSourceMapURI(relURI(sm))
-          .withJSFileURI(relURI(js))
-      }
-
       val cache = StandardImpl.irFileCache().newCache
 
       val result = PathIRContainer
         .fromClasspath(classpath)
-        .flatMap(containers => cache.cached(containers._1))
-        .flatMap(linker.link(_, moduleInitializers, output, logger))
+        .map(_._1)
+        .flatMap(cache.cached _)
+        .flatMap{irFiles =>
+          options.output match {
+            case OutputFile.SingleFile(jsFile) =>
+              val output = deprecatedOutput(jsFile)
+              linker.link(irFiles, moduleInitializers, output, logger)
+            case OutputFile.Directory(outputDir) =>
+              linker.link(irFiles, moduleInitializers, PathOutputDirectory(outputDir.toPath), logger)
+          }
+        }
       Await.result(result, Duration.Inf)
     }
+  }
+
+  private def deprecatedOutput(file: File) = {
+    val js = file.toPath()
+    val sm = js.resolveSibling(js.getFileName().toString() + ".map")
+
+    def relURI(f: Path) =
+      new URI(null, null, f.getFileName().toString, null)
+
+    LinkerOutput(PathOutputFile(js))
+      .withSourceMap(PathOutputFile(sm))
+      .withSourceMapURI(relURI(sm))
+      .withJSFileURI(relURI(js))
   }
 }
